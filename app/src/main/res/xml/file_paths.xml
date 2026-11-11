@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<paths>
+    <!-- Transcripts are copied here (with their timestamp file name) before being shared. -->
+    <cache-path name="share" path="share/" />
+</paths>

@@ -1,0 +1,26 @@
+# Gradle / Android Studio
+.gradle/
+build/
+/captures/
+.externalNativeBuild/
+.cxx/
+*.iml
+.idea/
+.kotlin/
+local.properties
+.DS_Store
+
+# Signing material: never commit keystores or their passwords
+*.jks
+*.keystore
+keystore.properties
+*.p12
+
+# Whisper model weights: downloaded or imported at runtime, never committed
+*.bin
+*.bin.part
+
+# Misc
+*.apk
+*.aab
+*.log
