@@ -1,6 +1,6 @@
 # Inkwell: The Private Transcriber
 
-Inkwell is my own private, fully offline dictation tool for writing a book and taking personal
+Inkwell is my own private, fully offline dictation tool for taking personal
 notes. I speak, it records, and it turns the recording into text on the phone itself, using
 OpenAI's Whisper speech model through [whisper.cpp](https://github.com/ggml-org/whisper.cpp).
 Nothing I say ever leaves the phone unless I choose to share or export it.
@@ -11,7 +11,7 @@ Nothing I say ever leaves the phone unless I choose to share or export it.
   default; Base and Small (quantised) give better accuracy, and any other GGML model can be imported.
 - **Fully offline.** Recording and transcription never touch the network.
 - **No recording time limit.** Audio is 16 kHz mono 16-bit PCM streamed straight to a WAV file on
-  disk, so a two-hour session uses no more memory than a two-minute one.
+  disk, so a two-hour session should uses no more memory than a two-minute one.
 - **Records in the background.** Recording runs in a foreground service with an ongoing
   notification (Pause/Resume and Stop buttons), so it keeps going with the screen off or while
   using other apps. Pause/resume, elapsed time and a level meter in the app.
@@ -27,7 +27,13 @@ Nothing I say ever leaves the phone unless I choose to share or export it.
   in a foreground service with a wake lock and shows progress in the app and the notification.
 - **Automatic punctuation and capitalisation** as Whisper produces them. Optional removal of
   `[BLANK_AUDIO]`, `[MUSIC]`, `(silence)` and similar tags.
-- **Starts transcribing as soon as I tap Stop** with the active model.
+- **Transcribe when I choose.** Tapping Stop just saves the recording. I tap **Transcribe** on it,
+  in the list or in the note, when I want the text. The note shows which model will be used, with
+  a button to change it first.
+- **Says when the model couldn't cope.** If nothing usable comes out, or the speech doesn't seem to
+  be in a language the model understands, the note says so and suggests choosing another model.
+  For example, English-only models can't transcribe other languages. In that case the recording
+  is always kept, even if audio is set to be deleted after transcription.
 - **Library**: every note shows title, date, duration and the model used. Open a note to read,
   edit or rename it, re-transcribe it, or cancel/resume a transcription.
 - **Deleting**, from the note screen or by long-pressing a note in the list: delete the recording
@@ -65,8 +71,11 @@ foreground service for microphone and data sync (keep working in the background)
 ## Models
 
 All models come from [ggerganov/whisper.cpp on Hugging Face](https://huggingface.co/ggerganov/whisper.cpp).
-English-only (`.en`) models are a little more accurate for English; multilingual models handle
-about 100 languages and follow the Language setting (auto-detect or fixed).
+English-only (`.en`) models are a little more accurate for English, but they can't transcribe
+anything else: other languages come out as nothing, as made-up English, or as the same sentence
+over and over. Multilingual models handle about 100 languages and follow the Language setting
+(auto-detect or fixed). If I speak anything other than English, even mixed with English, I use a
+multilingual model.
 
 | Model | File | Download | Languages | Guidance |
 |---|---|---|---|---|
@@ -195,7 +204,8 @@ first). Losing the release keystore has the same effect, so keep the backup.
 4. Google Play Protect may warn about an unknown developer. Choose **More details → Install
    anyway**.
 5. Open Inkwell, go to **Models**, download **Tiny** (78 MB) or import a model, and start recording.
-   Allow the microphone and notification permissions when asked.
+   Allow the microphone and notification permissions when asked. After **Stop**, tap
+   **Transcribe** on the recording.
 
 To update, install the new APK over the old one. Notes are kept as long as both builds are
 signed with the same key.
@@ -218,6 +228,8 @@ Windows, FAT32/exFAT USB sticks and SD cards all accept.
 
 ## Licenses
 
+- Inkwell itself: MIT License, see [LICENSE](LICENSE). This covers the app's own code; the
+  components below keep their own licenses.
 - [whisper.cpp](https://github.com/ggml-org/whisper.cpp) and ggml: MIT License. Included as a git
   submodule at `app/src/main/cpp/whisper.cpp` (pinned to release v1.9.5). The JNI bridge and CPU
   core detection are adapted from its `examples/whisper.android`.
