@@ -7,6 +7,7 @@ import com.variableduck.inkwell.transcriber.data.NoteRepository
 import com.variableduck.inkwell.transcriber.data.NoteRepository.DeleteWhat
 import com.variableduck.inkwell.transcriber.data.NoteStatus
 import com.variableduck.inkwell.transcriber.transcribe.ChunkedTranscriber
+import com.variableduck.inkwell.transcriber.transcribe.ProgressEstimator
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.Json
@@ -62,23 +63,33 @@ class NoteRepositoryTest {
         val note = newRecordedNote(100, silentFrom = 28, silentTo = 70)
         val prompts = mutableListOf<String>()
         var calls = 0
-        var lastProgress = 0f
+        var now = 0L
+        val estimator = ProgressEstimator(guessMsPerAudioSecond = 100.0, clock = { now })
+        val seen = mutableListOf<Float>()
         ChunkedTranscriber(repo).run(
             id = note.id,
             removeTags = true,
             transcribeChunk = { samples, prompt ->
                 assertTrue(samples.size <= 30 * 16_000)
                 prompts += prompt
+                // Progress keeps moving while Whisper is busy with the chunk.
+                val before = estimator.progress()
+                now += 1_000
+                seen += estimator.progress()
+                assertTrue("progress should move during a chunk", seen.last() > before)
+                now += 1_000
                 " [BLANK_AUDIO] Part ${++calls}."
             },
-            onProgress = { lastProgress = it },
+            listener = estimator,
         )
+        assertEquals(seen.sorted(), seen)
         val text = repo.readText(note.id)
         assertEquals((1..calls).joinToString(" ") { "Part $it." }, text)
         assertEquals("one silent chunk should be skipped", 3, calls)
         assertEquals("", prompts.first())
         assertEquals("Part 1.", prompts[1])
-        assertEquals(1f, lastProgress, 0f)
+        assertEquals(1f, estimator.progress(), 0f)
+        assertEquals(0L, estimator.remainingMs())
         val saved = repo.get(note.id)!!
         assertEquals(100L * 16_000, saved.doneSamples)
         assertEquals(text.toByteArray().size.toLong(), saved.textBytes)

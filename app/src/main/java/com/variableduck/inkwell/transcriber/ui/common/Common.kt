@@ -1,17 +1,23 @@
 package com.variableduck.inkwell.transcriber.ui.common
 
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Text
@@ -29,6 +35,7 @@ import androidx.compose.ui.unit.dp
 import com.variableduck.inkwell.transcriber.data.NoteEntry
 import com.variableduck.inkwell.transcriber.data.NoteRepository.DeleteWhat
 import com.variableduck.inkwell.transcriber.data.NoteStatus
+import com.variableduck.inkwell.transcriber.transcribe.TranscriptionState
 import com.variableduck.inkwell.transcriber.util.Format
 
 fun deleteOptionLabel(what: DeleteWhat) = when (what) {
@@ -146,13 +153,21 @@ fun DeleteDialog(
     )
 }
 
-/** Short status shown for a note, or null when there's nothing to say. */
-fun statusLabel(entry: NoteEntry): String? {
+/**
+ * Short status shown for a note, or null when there's nothing to say. [live] is the running
+ * transcription, whose progress moves more smoothly than the saved one.
+ */
+fun statusLabel(entry: NoteEntry, live: TranscriptionState? = null): String? {
     val note = entry.note
+    val progress = live?.takeIf { it.noteId == note.id && !it.indeterminate }?.progress ?: note.progress
     return when (note.status) {
         NoteStatus.RECORDING -> "Recording…"
-        NoteStatus.QUEUED -> if (note.doneSamples > 0) "Waiting to resume (${Format.percent(note.progress)})" else "Waiting to transcribe"
-        NoteStatus.TRANSCRIBING -> "Transcribing ${Format.percent(note.progress)}"
+        NoteStatus.QUEUED -> when {
+            live?.running == true && live.noteId == note.id -> "Loading model…"
+            note.doneSamples > 0 -> "Waiting to resume (${Format.percent(note.progress)})"
+            else -> "Waiting to transcribe"
+        }
+        NoteStatus.TRANSCRIBING -> "Transcribing ${Format.percent(progress)}"
         NoteStatus.FAILED -> "Transcription failed"
         NoteStatus.RECORDED ->
             if (note.hasPartialTranscript) "Partly transcribed (${Format.percent(note.progress)})" else "Not transcribed"
@@ -160,6 +175,30 @@ fun statusLabel(entry: NoteEntry): String? {
             note.warning != null -> "Parts left out"
             !entry.hasAudio -> "Text only"
             else -> null
+        }
+    }
+}
+
+/** Where a running transcription is: one summary line and a progress bar that keeps moving. */
+@Composable
+fun TranscriptionProgress(state: TranscriptionState, modifier: Modifier = Modifier) {
+    val progress by animateFloatAsState(state.progress, label = "transcription progress")
+    Column(modifier) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            // Always spinning, so it's clear work is going on even when the estimate is slow.
+            CircularProgressIndicator(Modifier.size(12.dp), strokeWidth = 2.dp)
+            Spacer(Modifier.width(8.dp))
+            Text(
+                state.summary,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        Spacer(Modifier.height(8.dp))
+        if (state.indeterminate) {
+            LinearProgressIndicator(Modifier.fillMaxWidth())
+        } else {
+            LinearProgressIndicator(progress = { progress }, modifier = Modifier.fillMaxWidth())
         }
     }
 }

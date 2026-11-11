@@ -24,7 +24,10 @@ Nothing I say ever leaves the phone unless I choose to share or export it.
   at the quietest moment so words aren't cut, and long pauses are skipped. The end of the text so
   far is given to Whisper as context so sentences join up across chunks. Text appears as each
   chunk finishes, and an interrupted transcription resumes where it stopped. Transcription runs
-  in a foreground service with a wake lock and shows progress in the app and the notification.
+  in a foreground service with a wake lock. The app and the notification show what it's doing:
+  loading the model, then the percentage, the point reached in the recording and roughly how long
+  is left. The bar keeps moving while Whisper works on each chunk, estimated from how fast this
+  phone has been so far.
 - **Automatic punctuation and capitalisation** as Whisper produces them. Optional removal of
   `[BLANK_AUDIO]`, `[MUSIC]`, `(silence)` and similar tags.
 - **Transcribe when I choose.** Tapping Stop just saves the recording. I tap **Transcribe** on it,

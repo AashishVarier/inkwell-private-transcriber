@@ -15,13 +15,14 @@ import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.app.ServiceCompat
 import androidx.core.content.ContextCompat
+import androidx.core.content.edit
 import com.variableduck.inkwell.transcriber.R
+import com.variableduck.inkwell.transcriber.audio.Wav
 import com.variableduck.inkwell.transcriber.container
 import com.variableduck.inkwell.transcriber.data.Note
 import com.variableduck.inkwell.transcriber.data.NoteRepository
 import com.variableduck.inkwell.transcriber.data.NoteStatus
 import com.variableduck.inkwell.transcriber.models.ModelItem
-import com.variableduck.inkwell.transcriber.util.Format
 import com.variableduck.inkwell.transcriber.util.Notifications
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineExceptionHandler
@@ -32,6 +33,7 @@ import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -155,8 +157,12 @@ class TranscriptionService : Service() {
         val id = queued.id
         val settings = c.settings.value
         TranscriptionStatus.update {
-            it.copy(running = true, noteId = id, noteTitle = queued.title, modelId = model.id, progress = queued.progress)
+            TranscriptionState(
+                running = true, noteId = id, noteTitle = queued.title, modelId = model.id,
+                modelName = model.displayName, stage = TranscriptionStage.LOADING_MODEL, progress = queued.progress,
+            )
         }
+        updateNotification(force = true)
         acquireWakeLock()
         try {
             if (!notes.audioFile(id).exists()) {
@@ -172,19 +178,40 @@ class TranscriptionService : Service() {
                     error = null, warning = null,
                 )
             }
+            TranscriptionStatus.update { it.copy(stage = TranscriptionStage.TRANSCRIBING) }
             updateNotification(force = true)
 
-            val result = ChunkedTranscriber(notes).run(
-                id = id,
-                removeTags = settings.removeTags,
-                transcribeChunk = { samples, prompt ->
-                    c.engine.transcribe(samples, settings.effectiveThreads, language, prompt)
-                },
-                onProgress = { progress ->
-                    TranscriptionStatus.update { it.copy(progress = progress) }
-                    updateNotification()
-                },
+            // Whisper is silent while it works on a chunk, so progress is estimated from how
+            // long earlier chunks took and published a few times a second.
+            val speedKey = "${model.id}/${settings.effectiveThreads}"
+            val speeds = getSharedPreferences(SPEED_PREFS, Context.MODE_PRIVATE)
+            val estimator = ProgressEstimator(
+                speeds.getFloat(speedKey, 0f).takeIf { it > 0f }?.toDouble()
+                    ?: ProgressEstimator.DEFAULT_GUESS_MS_PER_AUDIO_SECOND,
             )
+            val ticker = scope.launch {
+                while (true) {
+                    publish(estimator)
+                    delay(TICK_MS)
+                }
+            }
+            val result = try {
+                ChunkedTranscriber(notes).run(
+                    id = id,
+                    removeTags = settings.removeTags,
+                    transcribeChunk = { samples, prompt ->
+                        c.engine.transcribe(samples, settings.effectiveThreads, language, prompt)
+                    },
+                    listener = estimator,
+                )
+            } finally {
+                ticker.cancel()
+                // Remembered so the next run's first estimate fits this phone.
+                estimator.msPerAudioSecond?.let { speeds.edit { putFloat(speedKey, it.toFloat()) } }
+            }
+            publish(estimator)
+            TranscriptionStatus.update { it.copy(stage = TranscriptionStage.FINISHING) }
+            updateNotification(force = true)
 
             val check = TranscriptCheck.evaluate(
                 hasWords = withContext(Dispatchers.IO) { TextCleaner.hasWords(notes.readText(id)) },
@@ -238,6 +265,21 @@ class TranscriptionService : Service() {
         }
     }
 
+    private fun publish(estimator: ProgressEstimator) {
+        val total = estimator.totalSamples
+        if (total <= 0) return
+        TranscriptionStatus.update {
+            it.copy(
+                stage = TranscriptionStage.TRANSCRIBING,
+                progress = estimator.progress(),
+                positionMs = estimator.position() * 1000 / Wav.SAMPLE_RATE,
+                totalMs = total * 1000 / Wav.SAMPLE_RATE,
+                remainingMs = estimator.remainingMs(),
+            )
+        }
+        updateNotification()
+    }
+
     // ---- Notification / wake lock ---------------------------------------------------------
 
     private fun buildNotification(state: TranscriptionState): Notification {
@@ -251,8 +293,8 @@ class TranscriptionService : Service() {
         return NotificationCompat.Builder(this, Notifications.CHANNEL_TRANSCRIPTION)
             .setSmallIcon(R.drawable.ic_stat_inkwell)
             .setContentTitle(state.noteTitle?.let { "Transcribing $it" } ?: "Preparing transcription…")
-            .setContentText("${Format.percent(state.progress)} · on this phone, offline")
-            .setProgress(100, percent, state.noteId == null)
+            .setContentText(state.summary)
+            .setProgress(100, percent, state.indeterminate)
             .setOngoing(true)
             .setOnlyAlertOnce(true)
             .setSilent(true)
@@ -293,6 +335,10 @@ class TranscriptionService : Service() {
         private const val ACTION_START = "inkwell.transcribe.START"
         private const val ACTION_CANCEL = "inkwell.transcribe.CANCEL"
         private const val WAKE_LOCK_TIMEOUT_MS = 4L * 60 * 60 * 1000
+        private const val TICK_MS = 250L
+
+        /** Measured speed per model and thread count (ms of work per second of audio). */
+        private const val SPEED_PREFS = "transcription_speed"
 
         fun start(context: Context) {
             try {

@@ -24,15 +24,24 @@ class ChunkedTranscriber(private val notes: NoteRepository) {
         val repetitiveChunks: Int = 0,
     )
 
-    /**
-     * @param transcribeChunk runs Whisper on 16 kHz float samples with the given prompt.
-     * @param onProgress called after each chunk with progress 0..1.
-     */
+    /** Told where the run is, so progress can be shown while Whisper works on a chunk. */
+    interface Listener {
+        /** Before the first chunk: [doneSamples] are already transcribed (when resuming). */
+        fun started(doneSamples: Long, totalSamples: Long) {}
+
+        /** Whisper starts on [length] samples beginning at [startSample]. */
+        fun chunkStarted(startSample: Long, length: Int) {}
+
+        /** Everything before [doneSamples] is finished; [transcribed] is false for skipped silence. */
+        fun advanced(doneSamples: Long, transcribed: Boolean) {}
+    }
+
+    /** @param transcribeChunk runs Whisper on 16 kHz float samples with the given prompt. */
     suspend fun run(
         id: String,
         removeTags: Boolean,
         transcribeChunk: suspend (samples: FloatArray, prompt: String) -> String,
-        onProgress: (Float) -> Unit = {},
+        listener: Listener = object : Listener {},
     ): Result {
         val prepared = notes.prepareTranscript(id, restart = false) ?: return Result()
         var speechChunks = 0
@@ -41,6 +50,7 @@ class ChunkedTranscriber(private val notes: NoteRepository) {
         WavReader(notes.audioFile(id)).use { reader ->
             val total = reader.totalSamples
             var position = prepared.doneSamples.coerceIn(0, total)
+            listener.started(position, total)
             val window = ShortArray(ChunkPlanner.MAX_CHUNK_SAMPLES)
             while (position < total) {
                 coroutineContext.ensureActive()
@@ -53,7 +63,7 @@ class ChunkedTranscriber(private val notes: NoteRepository) {
                     position += silence
                     val progress = position.toFloat() / total
                     notes.appendChunk(id, "", position, progress)
-                    onProgress(progress)
+                    listener.advanced(position, transcribed = false)
                     continue
                 }
 
@@ -61,7 +71,9 @@ class ChunkedTranscriber(private val notes: NoteRepository) {
                 val length = ChunkPlanner.chunkLength(window, count, isLast)
 
                 var piece = ""
-                if (!ChunkPlanner.isSilent(window, length)) {
+                val speech = !ChunkPlanner.isSilent(window, length)
+                if (speech) {
+                    listener.chunkStarted(position, length)
                     val prompt = TextCleaner.promptTail(notes.textTail(id, PROMPT_READ_CHARS))
                     val raw = transcribeChunk(ChunkPlanner.toFloat(window, length), prompt)
                     coroutineContext.ensureActive()
@@ -74,7 +86,7 @@ class ChunkedTranscriber(private val notes: NoteRepository) {
                 position += length
                 val progress = if (total > 0) position.toFloat() / total else 1f
                 notes.appendChunk(id, piece, position, progress)
-                onProgress(progress)
+                listener.advanced(position, transcribed = speech)
             }
         }
         return Result(speechChunks, foreignChunks, repetitiveChunks)

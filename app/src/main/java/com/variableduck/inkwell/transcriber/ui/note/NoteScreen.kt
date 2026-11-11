@@ -81,10 +81,13 @@ import com.variableduck.inkwell.transcriber.data.NoteStatus
 import com.variableduck.inkwell.transcriber.models.ModelItem
 import com.variableduck.inkwell.transcriber.record.RecordingStatus
 import com.variableduck.inkwell.transcriber.share.ExportFormat
+import com.variableduck.inkwell.transcriber.transcribe.TranscriptionState
+import com.variableduck.inkwell.transcriber.transcribe.TranscriptionStatus
 import com.variableduck.inkwell.transcriber.share.ShareExport
 import com.variableduck.inkwell.transcriber.ui.Navigator
 import com.variableduck.inkwell.transcriber.ui.Routes
 import com.variableduck.inkwell.transcriber.ui.common.DeleteDialog
+import com.variableduck.inkwell.transcriber.ui.common.TranscriptionProgress
 import com.variableduck.inkwell.transcriber.ui.common.deleteOptionLabel
 import com.variableduck.inkwell.transcriber.ui.common.isOptionAvailable
 import com.variableduck.inkwell.transcriber.util.Format
@@ -99,6 +102,7 @@ fun NoteScreen(id: String, nav: Navigator) {
     val activeModel by vm.activeModel.collectAsStateWithLifecycle()
     val playback by vm.player.state.collectAsStateWithLifecycle()
     val recorder by RecordingStatus.state.collectAsStateWithLifecycle()
+    val transcription by TranscriptionStatus.state.collectAsStateWithLifecycle()
     val snackbar = remember { SnackbarHostState() }
 
     var menu by remember { mutableStateOf(false) }
@@ -244,6 +248,7 @@ fun NoteScreen(id: String, nav: Navigator) {
             StatusArea(
                 entry = current,
                 activeModel = activeModel,
+                live = transcription,
                 onTranscribe = { vm.transcribe(restart = false) },
                 onStartOver = { confirmRestart = true },
                 onCancel = { vm.cancelTranscription(context) },
@@ -409,6 +414,7 @@ private fun PlayerBar(
 private fun StatusArea(
     entry: NoteEntry,
     activeModel: ModelItem?,
+    live: TranscriptionState,
     onTranscribe: () -> Unit,
     onStartOver: () -> Unit,
     onCancel: () -> Unit,
@@ -422,17 +428,18 @@ private fun StatusArea(
     when (note.status) {
         NoteStatus.RECORDING -> Text("Recording in progress…", modifier, color = MaterialTheme.colorScheme.error)
         NoteStatus.QUEUED, NoteStatus.TRANSCRIBING -> Column(modifier) {
+            // The service picks the note up (and loads the model) before marking it TRANSCRIBING.
+            val running = live.takeIf { it.running && it.noteId == note.id }
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(
-                    if (note.status == NoteStatus.QUEUED) "Waiting to transcribe…"
-                    else "Transcribing on this phone · ${Format.percent(note.progress)}",
+                    if (running == null) "Waiting to transcribe…" else "Transcribing on this phone",
                     Modifier.weight(1f),
                     style = MaterialTheme.typography.bodyMedium,
                 )
                 TextButton(onClick = onCancel) { Text("Cancel") }
             }
-            if (note.status == NoteStatus.TRANSCRIBING) {
-                LinearProgressIndicator(progress = { note.progress }, modifier = Modifier.fillMaxWidth())
+            if (running != null) {
+                TranscriptionProgress(running)
             } else {
                 LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
             }

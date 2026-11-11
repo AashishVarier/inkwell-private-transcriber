@@ -50,7 +50,6 @@ import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
-import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.RadioButton
@@ -98,6 +97,7 @@ import com.variableduck.inkwell.transcriber.ui.Routes
 import com.variableduck.inkwell.transcriber.ui.common.DeleteDialog
 import com.variableduck.inkwell.transcriber.ui.common.LevelMeter
 import com.variableduck.inkwell.transcriber.ui.common.SectionHeader
+import com.variableduck.inkwell.transcriber.ui.common.TranscriptionProgress
 import com.variableduck.inkwell.transcriber.ui.common.deleteOptionLabel
 import com.variableduck.inkwell.transcriber.ui.common.isOptionAvailable
 import com.variableduck.inkwell.transcriber.ui.common.statusLabel
@@ -288,6 +288,7 @@ fun LibraryScreen(nav: Navigator) {
                     entry = entry,
                     selecting = selecting,
                     selected = entry.id in selection,
+                    live = transcription,
                     onClick = {
                         if (selecting) {
                             selection = if (entry.id in selection) selection - entry.id else selection + entry.id
@@ -503,16 +504,10 @@ private fun TranscriptionCard(state: TranscriptionState, onCancel: () -> Unit) {
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                     )
-                    Text(
-                        Format.percent(state.progress),
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
                 }
                 TextButton(onClick = onCancel) { Text("Cancel") }
             }
-            Spacer(Modifier.height(8.dp))
-            LinearProgressIndicator(progress = { state.progress }, modifier = Modifier.fillMaxWidth())
+            TranscriptionProgress(state, Modifier.padding(top = 4.dp))
         }
     }
 }
@@ -523,6 +518,7 @@ private fun NoteRow(
     entry: NoteEntry,
     selecting: Boolean,
     selected: Boolean,
+    live: TranscriptionState,
     onClick: () -> Unit,
     onTranscribe: () -> Unit,
     onDelete: (DeleteWhat) -> Unit,
@@ -565,7 +561,7 @@ private fun NoteRow(
                     )
                 }
                 val status = listOfNotNull(
-                    statusLabel(entry),
+                    statusLabel(entry, live),
                     if (note.recovered) "Recovered" else null,
                 ).joinToString(" · ")
                 if (status.isNotEmpty()) {

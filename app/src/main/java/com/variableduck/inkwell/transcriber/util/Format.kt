@@ -23,4 +23,14 @@ object Format {
     }
 
     fun percent(fraction: Float): String = "${(fraction * 100).toInt().coerceIn(0, 100)}%"
+
+    /** "less than a minute left", "about 3 min left", "about 1 h 5 min left". */
+    fun remaining(ms: Long): String {
+        val minutes = (ms + 59_999) / 60_000
+        return when {
+            ms < 60_000 -> "less than a minute left"
+            minutes < 60 -> "about $minutes min left"
+            else -> "about ${minutes / 60} h ${minutes % 60} min left"
+        }
+    }
 }
