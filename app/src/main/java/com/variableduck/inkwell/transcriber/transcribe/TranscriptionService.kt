@@ -31,6 +31,8 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -131,11 +133,17 @@ class TranscriptionService : Service() {
         } finally {
             withContext(NonCancellable) {
                 c.engine.release()
-                TranscriptionStatus.update { TranscriptionState() }
                 releaseWakeLock()
                 withContext(Dispatchers.Main) {
-                    ServiceCompat.stopForeground(this@TranscriptionService, ServiceCompat.STOP_FOREGROUND_REMOVE)
-                    stopSelf()
+                    // Decided on the main thread, where start commands arrive, so a note queued
+                    // while this run was finishing is not left waiting.
+                    if (!timedOut && scope.isActive && c.notes.hasQueued() && c.models.activeModel() != null) {
+                        queueJob = scope.launch { runQueue() }
+                    } else {
+                        TranscriptionStatus.update { TranscriptionState() }
+                        ServiceCompat.stopForeground(this@TranscriptionService, ServiceCompat.STOP_FOREGROUND_REMOVE)
+                        stopSelf()
+                    }
                 }
             }
         }
@@ -183,16 +191,17 @@ class TranscriptionService : Service() {
                 this, Notifications.ID_TRANSCRIPT_READY, "Transcript ready", queued.title,
                 Notifications.CHANNEL_TRANSCRIPTION,
             )
-        } catch (e: CancellationException) {
-            withContext(NonCancellable) {
-                // Keep the checkpoint. After a system time-out, queue it to resume automatically;
-                // after the user's Cancel, leave it ready to resume by hand.
-                notes.update(id) {
-                    it.copy(status = if (timedOut) NoteStatus.QUEUED else NoteStatus.RECORDED)
-                }
-            }
-            throw e
         } catch (e: Exception) {
+            if (e is CancellationException || !currentCoroutineContext().isActive) {
+                withContext(NonCancellable) {
+                    // Keep the checkpoint. After a system time-out, queue it to resume
+                    // automatically; after the user's Cancel, leave it ready to resume by hand.
+                    notes.update(id) {
+                        it.copy(status = if (timedOut) NoteStatus.QUEUED else NoteStatus.RECORDED)
+                    }
+                }
+                throw e as? CancellationException ?: CancellationException("Cancelled")
+            }
             Log.e(TAG, "Transcription of $id failed", e)
             notes.update(id) { it.copy(status = NoteStatus.FAILED, error = e.message ?: "Transcription failed") }
         } finally {

@@ -73,7 +73,21 @@ class RecordingService : Service() {
     }
 
     private fun start() {
-        if (recorder != null) return
+        if (recorder != null || RecordingStatus.state.value.isActive) {
+            // Already recording (e.g. a double tap). Every startForegroundService() call must
+            // still be answered with startForeground().
+            try {
+                ServiceCompat.startForeground(
+                    this,
+                    Notifications.ID_RECORDING,
+                    buildNotification(RecordingStatus.state.value),
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE else 0,
+                )
+            } catch (e: Exception) {
+                Log.w(TAG, "Couldn't refresh foreground state", e)
+            }
+            return
+        }
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) !=
             PackageManager.PERMISSION_GRANTED
         ) {

@@ -3,6 +3,7 @@ package com.variableduck.inkwell.transcriber.whisper
 import android.content.Context
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.asCoroutineDispatcher
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.IOException
@@ -43,7 +44,11 @@ class WhisperEngine(private val context: Context) {
         withContext(dispatcher) {
             check(ctx != 0L) { "No model loaded" }
             val rc = WhisperLib.nativeTranscribe(ctx, samples, threads, language, prompt)
-            if (rc != 0) throw IOException("Transcription failed (whisper error $rc)")
+            if (rc != 0) {
+                // A cancelled job aborts whisper_full; report that as cancellation, not failure.
+                coroutineContext.ensureActive()
+                throw IOException("Transcription failed (whisper error $rc)")
+            }
             String(WhisperLib.nativeGetText(ctx), Charsets.UTF_8)
         }
 

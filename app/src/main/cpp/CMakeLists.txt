@@ -9,6 +9,21 @@ set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
 
 project(inkwell C CXX)
 
+# Limit parallel compiles to roughly one per 1.5 GB of RAM: ggml's -O3 CPU variants are heavy,
+# and an unlimited ninja run can exhaust memory on 8 GB machines.
+cmake_host_system_information(RESULT INKWELL_TOTAL_MEM_MB QUERY TOTAL_PHYSICAL_MEMORY)
+cmake_host_system_information(RESULT INKWELL_CORES QUERY NUMBER_OF_LOGICAL_CORES)
+math(EXPR INKWELL_JOBS "${INKWELL_TOTAL_MEM_MB} / 1536")
+if (INKWELL_JOBS LESS 1)
+    set(INKWELL_JOBS 1)
+endif()
+if (INKWELL_JOBS GREATER INKWELL_CORES)
+    set(INKWELL_JOBS ${INKWELL_CORES})
+endif()
+set_property(GLOBAL APPEND PROPERTY JOB_POOLS inkwell_compile=${INKWELL_JOBS})
+set(CMAKE_JOB_POOL_COMPILE inkwell_compile)
+message(STATUS "Native compile jobs: ${INKWELL_JOBS}")
+
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
