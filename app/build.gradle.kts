@@ -101,6 +101,11 @@ android {
         compose = true
         buildConfig = true
     }
+
+    testOptions {
+        // Lets JVM unit tests exercise code that logs via android.util.Log.
+        unitTests.isReturnDefaultValues = true
+    }
 }
 
 kotlin {

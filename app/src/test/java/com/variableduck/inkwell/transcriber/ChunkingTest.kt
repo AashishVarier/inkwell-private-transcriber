@@ -36,6 +36,18 @@ class ChunkingTest {
     }
 
     @Test
+    fun skipsLongLeadingSilenceButKeepsAShortMargin() {
+        val w = ShortArray(30 * rate)
+        for (i in 10 * rate until w.size) w[i] = 3000
+        assertEquals(10 * rate - ChunkPlanner.LEAD_MARGIN_SAMPLES, ChunkPlanner.leadingSilence(w, w.size))
+        // Under a second of leading silence is left alone.
+        val short = ShortArray(rate) { if (it > rate / 2) 3000 else 0 }
+        assertEquals(0, ChunkPlanner.leadingSilence(short, short.size))
+        // All silent: skip everything.
+        assertEquals(500, ChunkPlanner.leadingSilence(ShortArray(500), 500))
+    }
+
+    @Test
     fun silenceDetectionAndPadding() {
         assertTrue(ChunkPlanner.isSilent(ShortArray(1000) { 20 }, 1000))
         assertFalse(ChunkPlanner.isSilent(ShortArray(1000) { if (it == 500) 5000 else 0 }, 1000))

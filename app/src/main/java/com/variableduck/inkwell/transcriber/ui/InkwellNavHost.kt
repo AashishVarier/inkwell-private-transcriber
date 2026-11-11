@@ -4,6 +4,7 @@ import androidx.activity.compose.BackHandler
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.saveable.listSaver
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import com.variableduck.inkwell.transcriber.ui.library.LibraryScreen
@@ -26,10 +27,12 @@ class Navigator(private val push: (String) -> Unit, private val pop: () -> Unit)
 
 @Composable
 fun InkwellNavHost() {
-    var stack by rememberSaveable { mutableStateOf(arrayListOf(Routes.LIBRARY)) }
+    var stack by rememberSaveable(stateSaver = listSaver<List<String>, String>(save = { it }, restore = { it })) {
+        mutableStateOf(listOf(Routes.LIBRARY))
+    }
     val navigator = Navigator(
-        push = { route -> if (stack.last() != route) stack = ArrayList(stack + route) },
-        pop = { if (stack.size > 1) stack = ArrayList(stack.dropLast(1)) },
+        push = { route -> if (stack.last() != route) stack = stack + route },
+        pop = { if (stack.size > 1) stack = stack.dropLast(1) },
     )
     BackHandler(enabled = stack.size > 1) { navigator.back() }
 

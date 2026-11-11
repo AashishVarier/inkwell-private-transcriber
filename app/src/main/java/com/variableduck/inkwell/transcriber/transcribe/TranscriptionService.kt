@@ -16,7 +16,6 @@ import androidx.core.app.NotificationManagerCompat
 import androidx.core.app.ServiceCompat
 import androidx.core.content.ContextCompat
 import com.variableduck.inkwell.transcriber.R
-import com.variableduck.inkwell.transcriber.audio.WavReader
 import com.variableduck.inkwell.transcriber.container
 import com.variableduck.inkwell.transcriber.data.Note
 import com.variableduck.inkwell.transcriber.data.NoteRepository
@@ -32,10 +31,8 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
-import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import kotlin.coroutines.coroutineContext
 
 /**
  * Transcribes queued notes one after another in a foreground service with a partial wake lock.
@@ -161,43 +158,22 @@ class TranscriptionService : Service() {
             c.engine.clearAbort()
             c.engine.load(c.models.file(model.id))
             val language = if (c.engine.isMultilingual) settings.language else "en"
-            val prepared = notes.prepareTranscript(id, restart = false) ?: return
             notes.update(id) {
                 it.copy(status = NoteStatus.TRANSCRIBING, modelName = model.displayName, language = language, error = null)
             }
             updateNotification(force = true)
 
-            WavReader(notes.audioFile(id)).use { reader ->
-                val total = reader.totalSamples
-                var position = prepared.doneSamples.coerceIn(0, total)
-                val window = ShortArray(ChunkPlanner.MAX_CHUNK_SAMPLES)
-                while (position < total) {
-                    coroutineContext.ensureActive()
-                    val count = reader.read(position, window.size, window)
-                    if (count <= 0) break
-                    val isLast = position + count >= total
-                    val length = ChunkPlanner.chunkLength(window, count, isLast)
-
-                    var piece = ""
-                    if (!ChunkPlanner.isSilent(window, length)) {
-                        val prompt = TextCleaner.promptTail(notes.textTail(id, 400))
-                        val raw = c.engine.transcribe(
-                            ChunkPlanner.toFloat(window, length),
-                            settings.effectiveThreads,
-                            language,
-                            prompt,
-                        )
-                        coroutineContext.ensureActive()
-                        val cleaned = TextCleaner.clean(raw, settings.removeTags)
-                        piece = TextCleaner.joinPiece(notes.textTail(id, 1), cleaned)
-                    }
-                    position += length
-                    val progress = position.toFloat() / total
-                    notes.appendChunk(id, piece, position, progress)
+            ChunkedTranscriber(notes).run(
+                id = id,
+                removeTags = settings.removeTags,
+                transcribeChunk = { samples, prompt ->
+                    c.engine.transcribe(samples, settings.effectiveThreads, language, prompt)
+                },
+                onProgress = { progress ->
                     TranscriptionStatus.update { it.copy(progress = progress) }
                     updateNotification()
-                }
-            }
+                },
+            )
 
             notes.update(id) { it.copy(status = NoteStatus.DONE, progress = 1f, error = null, doneSamples = 0) }
             if (!c.settings.value.keepAudio) {

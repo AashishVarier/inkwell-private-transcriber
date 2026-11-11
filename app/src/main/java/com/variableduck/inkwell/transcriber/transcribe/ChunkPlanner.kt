@@ -42,6 +42,28 @@ object ChunkPlanner {
         return bestEnd.coerceIn(1, count)
     }
 
+    /** Silence kept before the first sound when leading silence is skipped. */
+    const val LEAD_MARGIN_SAMPLES = Wav.SAMPLE_RATE / 4
+
+    /**
+     * Samples of silence at the start of the window worth skipping (0 if under a second).
+     * Long pauses are common in dictation; giving Whisper a window that starts near speech
+     * improves accuracy and avoids hallucinated text on silence. Returns [count] if the whole
+     * window is silent.
+     */
+    fun leadingSilence(samples: ShortArray, count: Int): Int {
+        var first = -1
+        for (i in 0 until count) {
+            if (abs(samples[i].toInt()) >= SILENCE_PEAK) {
+                first = i
+                break
+            }
+        }
+        if (first < 0) return count
+        val skip = first - LEAD_MARGIN_SAMPLES
+        return if (skip >= Wav.SAMPLE_RATE) skip else 0
+    }
+
     fun isSilent(samples: ShortArray, count: Int): Boolean {
         for (i in 0 until count) if (abs(samples[i].toInt()) >= SILENCE_PEAK) return false
         return true
