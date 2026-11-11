@@ -1,0 +1,6 @@
+# Keep shell scripts LF and Windows scripts CRLF regardless of the checkout platform.
+* text=auto
+gradlew text eol=lf
+*.sh text eol=lf
+*.bat text eol=crlf
+*.jar binary
