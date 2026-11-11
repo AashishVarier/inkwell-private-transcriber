@@ -10,6 +10,7 @@ import androidx.compose.ui.text.input.TextFieldValue
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.variableduck.inkwell.transcriber.AppContainer
+import com.variableduck.inkwell.transcriber.audio.AudioPlayer
 import com.variableduck.inkwell.transcriber.data.NoteEntry
 import com.variableduck.inkwell.transcriber.data.NoteNames
 import com.variableduck.inkwell.transcriber.data.NoteRepository.DeleteWhat
@@ -40,6 +41,18 @@ class NoteViewModel(private val c: AppContainer, val id: String) : ViewModel() {
     val activeModel: StateFlow<ModelItem?> = combine(c.models.items, c.settings.state) { items, s ->
         items.firstOrNull { it.id == s.activeModelId && it.installed }
     }.stateIn(viewModelScope, SharingStarted.Eagerly, c.models.activeModel())
+
+    /** Plays this note's recording. */
+    val player = AudioPlayer(c.appContext, viewModelScope)
+    private val audio get() = c.notes.audioFile(id)
+
+    fun togglePlayback() = player.toggle(audio)
+    fun seekPlayback(positionMs: Long) = player.seekTo(audio, positionMs)
+    fun skipPlayback(deltaMs: Long) = player.skip(audio, deltaMs)
+
+    override fun onCleared() {
+        player.release()
+    }
 
     var editor by mutableStateOf(TextFieldValue(""))
         private set

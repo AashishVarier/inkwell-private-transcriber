@@ -36,6 +36,9 @@ Nothing I say ever leaves the phone unless I choose to share or export it.
   is always kept, even if audio is set to be deleted after transcription.
 - **Library**: every note shows title, date, duration and the model used. Open a note to read,
   edit or rename it, re-transcribe it, or cancel/resume a transcription.
+- **Playback**: play a recording from its note, with a seek bar and 5-second skips, to check the
+  transcript against it. Playback pauses when headphones are unplugged or another app (such as a
+  call) takes over the audio, and stops when I leave the note.
 - **Deleting**, from the note screen or by long-pressing a note in the list: delete the recording
   only (keep the text), the transcript only (keep the audio, which can be transcribed again), or
   both. Select several notes to delete them together. Every delete asks for confirmation and says

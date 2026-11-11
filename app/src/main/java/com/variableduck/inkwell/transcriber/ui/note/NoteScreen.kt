@@ -1,5 +1,6 @@
 package com.variableduck.inkwell.transcriber.ui.note
 
+import android.app.Activity
 import android.net.Uri
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -24,13 +25,18 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.material.icons.filled.Forward5
 import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.Pause
+import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Replay5
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilledIconButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -39,6 +45,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Slider
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
@@ -56,6 +63,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -64,12 +72,14 @@ import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.variableduck.inkwell.transcriber.audio.AudioPlayer
 import com.variableduck.inkwell.transcriber.container
 import com.variableduck.inkwell.transcriber.data.NoteEntry
 import com.variableduck.inkwell.transcriber.data.NoteNames
 import com.variableduck.inkwell.transcriber.data.NoteRepository.DeleteWhat
 import com.variableduck.inkwell.transcriber.data.NoteStatus
 import com.variableduck.inkwell.transcriber.models.ModelItem
+import com.variableduck.inkwell.transcriber.record.RecordingStatus
 import com.variableduck.inkwell.transcriber.share.ExportFormat
 import com.variableduck.inkwell.transcriber.share.ShareExport
 import com.variableduck.inkwell.transcriber.ui.Navigator
@@ -87,6 +97,8 @@ fun NoteScreen(id: String, nav: Navigator) {
     val vm: NoteViewModel = viewModel(key = "note-$id") { NoteViewModel(app, id) }
     val entry by vm.entry.collectAsStateWithLifecycle()
     val activeModel by vm.activeModel.collectAsStateWithLifecycle()
+    val playback by vm.player.state.collectAsStateWithLifecycle()
+    val recorder by RecordingStatus.state.collectAsStateWithLifecycle()
     val snackbar = remember { SnackbarHostState() }
 
     var menu by remember { mutableStateOf(false) }
@@ -101,10 +113,18 @@ fun NoteScreen(id: String, nav: Navigator) {
     val lifecycleOwner = LocalLifecycleOwner.current
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
-            if (event == Lifecycle.Event.ON_STOP) vm.saveIfDirty()
+            if (event == Lifecycle.Event.ON_STOP) {
+                vm.saveIfDirty()
+                vm.player.pause()
+            }
         }
         lifecycleOwner.lifecycle.addObserver(observer)
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+    // Leaving the note stops playback (but rotating the screen doesn't).
+    val activity = context as? Activity
+    DisposableEffect(vm) {
+        onDispose { if (activity?.isChangingConfigurations != true) vm.player.release() }
     }
     val goBack = {
         vm.saveIfDirty()
@@ -126,6 +146,10 @@ fun NoteScreen(id: String, nav: Navigator) {
     }
     if (current == null) return
     val note = current.note
+    // The recording was deleted (by the user, or after transcription): stop playing it.
+    LaunchedEffect(current.hasAudio) {
+        if (!current.hasAudio) vm.player.release()
+    }
 
     Scaffold(
         topBar = {
@@ -207,6 +231,16 @@ fun NoteScreen(id: String, nav: Navigator) {
                 .imePadding(),
         ) {
             NoteHeader(current)
+            if (current.hasAudio && note.status != NoteStatus.RECORDING) {
+                PlayerBar(
+                    state = playback,
+                    knownDurationMs = note.durationMs,
+                    enabled = !recorder.isActive,
+                    onToggle = vm::togglePlayback,
+                    onSeek = vm::seekPlayback,
+                    onSkip = vm::skipPlayback,
+                )
+            }
             StatusArea(
                 entry = current,
                 activeModel = activeModel,
@@ -300,6 +334,71 @@ private fun NoteHeader(entry: NoteEntry) {
                 "Recovered after the app closed unexpectedly while recording.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.secondary,
+            )
+        }
+    }
+}
+
+@Composable
+private fun PlayerBar(
+    state: AudioPlayer.State,
+    knownDurationMs: Long,
+    enabled: Boolean,
+    onToggle: () -> Unit,
+    onSeek: (Long) -> Unit,
+    onSkip: (Long) -> Unit,
+) {
+    val duration = if (state.durationMs > 0) state.durationMs else knownDurationMs
+    // While the thumb is dragged, show where it is; seek only when it's let go.
+    var dragging by remember { mutableStateOf<Float?>(null) }
+    val position = dragging?.let { (it * duration).toLong() } ?: state.positionMs
+    Column(Modifier.padding(horizontal = 8.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            IconButton(onClick = { onSkip(-5_000) }, enabled = enabled) {
+                Icon(Icons.Default.Replay5, contentDescription = "Back 5 seconds")
+            }
+            FilledIconButton(onClick = onToggle, enabled = enabled) {
+                Icon(
+                    if (state.playing) Icons.Default.Pause else Icons.Default.PlayArrow,
+                    contentDescription = if (state.playing) "Pause" else "Play recording",
+                )
+            }
+            IconButton(onClick = { onSkip(5_000) }, enabled = enabled) {
+                Icon(Icons.Default.Forward5, contentDescription = "Forward 5 seconds")
+            }
+            Column(
+                Modifier
+                    .weight(1f)
+                    .padding(start = 4.dp, end = 8.dp),
+            ) {
+                Slider(
+                    value = if (duration > 0) (position.toFloat() / duration).coerceIn(0f, 1f) else 0f,
+                    onValueChange = { dragging = it },
+                    onValueChangeFinished = {
+                        dragging?.let { onSeek((it * duration).toLong()) }
+                        dragging = null
+                    },
+                    enabled = enabled && duration > 0,
+                )
+                Text(
+                    "${Format.duration(position)} / ${Format.duration(duration)}",
+                    style = MaterialTheme.typography.bodySmall,
+                    fontFamily = FontFamily.Monospace,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+        val message = when {
+            !enabled -> "Playback is off while recording."
+            else -> state.error
+        }
+        message?.let {
+            Text(
+                it,
+                Modifier.padding(horizontal = 8.dp),
+                style = MaterialTheme.typography.bodySmall,
+                color = if (state.error != null && enabled) MaterialTheme.colorScheme.error
+                else MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
     }
