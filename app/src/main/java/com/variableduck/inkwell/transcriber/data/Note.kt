@@ -45,6 +45,8 @@ data class Note(
     /** True if the app died while recording and the audio was recovered at next launch. */
     val recovered: Boolean = false,
     val error: String? = null,
+    /** Set when the transcript finished but parts were left out (e.g. speech in another language). */
+    val warning: String? = null,
     val queuedAt: Long = 0,
     val updatedAt: Long = 0,
 ) {

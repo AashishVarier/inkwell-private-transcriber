@@ -165,6 +165,18 @@ fun LibraryScreen(nav: Navigator) {
         ActivityResultContracts.CreateDocument("application/zip"),
     ) { uri: Uri? -> if (uri != null) vm.exportAll(context, uri, exportFormat) }
 
+    fun transcribe(id: String) {
+        if (activeModel != null) return vm.transcribe(id)
+        scope.launch {
+            val result = snackbar.showSnackbar(
+                "Download or import a model first.",
+                actionLabel = "Models",
+                duration = SnackbarDuration.Long,
+            )
+            if (result == SnackbarResult.ActionPerformed) nav.open(Routes.MODELS)
+        }
+    }
+
     fun startRecording() {
         val needed = buildList {
             add(Manifest.permission.RECORD_AUDIO)
@@ -283,6 +295,7 @@ fun LibraryScreen(nav: Navigator) {
                             nav.open(Routes.note(entry.id))
                         }
                     },
+                    onTranscribe = { transcribe(entry.id) },
                     onDelete = { what -> if (vm.canDelete()) deleteTarget = listOf(entry.id) to what },
                     onSelectMultiple = {
                         selecting = true
@@ -511,6 +524,7 @@ private fun NoteRow(
     selecting: Boolean,
     selected: Boolean,
     onClick: () -> Unit,
+    onTranscribe: () -> Unit,
     onDelete: (DeleteWhat) -> Unit,
     onSelectMultiple: () -> Unit,
 ) {
@@ -558,18 +572,42 @@ private fun NoteRow(
                     Text(
                         status,
                         style = MaterialTheme.typography.labelMedium,
-                        color = if (note.status == NoteStatus.FAILED) MaterialTheme.colorScheme.error
-                        else MaterialTheme.colorScheme.secondary,
+                        color = if (note.status == NoteStatus.FAILED || note.warning != null) {
+                            MaterialTheme.colorScheme.error
+                        } else {
+                            MaterialTheme.colorScheme.secondary
+                        },
                     )
                 }
             }
             Spacer(Modifier.width(12.dp))
-            Text(
-                Format.duration(note.durationMs),
-                style = MaterialTheme.typography.bodyMedium,
-                fontFamily = FontFamily.Monospace,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
+            Column(horizontalAlignment = Alignment.End) {
+                Text(
+                    Format.duration(note.durationMs),
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontFamily = FontFamily.Monospace,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                val canTranscribe = entry.hasAudio &&
+                    (note.status == NoteStatus.RECORDED || note.status == NoteStatus.FAILED)
+                if (!selecting && canTranscribe) {
+                    Spacer(Modifier.height(4.dp))
+                    FilledTonalButton(
+                        onClick = onTranscribe,
+                        contentPadding = PaddingValues(horizontal = 12.dp),
+                        modifier = Modifier.height(32.dp),
+                    ) {
+                        Text(
+                            when {
+                                note.hasPartialTranscript -> "Resume"
+                                note.status == NoteStatus.FAILED -> "Try again"
+                                else -> "Transcribe"
+                            },
+                            style = MaterialTheme.typography.labelLarge,
+                        )
+                    }
+                }
+            }
         }
         DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
             DeleteWhat.entries.forEach { what ->

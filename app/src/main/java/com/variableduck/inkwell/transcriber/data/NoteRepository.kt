@@ -264,6 +264,7 @@ class NoteRepository(val dir: File) {
                         progress = 0f,
                         modelName = null,
                         error = null,
+                        warning = null,
                     )
                     DeleteWhat.BOTH -> note
                 }.copy(updatedAt = System.currentTimeMillis())

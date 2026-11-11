@@ -14,6 +14,7 @@ import com.variableduck.inkwell.transcriber.data.NoteEntry
 import com.variableduck.inkwell.transcriber.data.NoteNames
 import com.variableduck.inkwell.transcriber.data.NoteRepository.DeleteWhat
 import com.variableduck.inkwell.transcriber.data.NoteStatus
+import com.variableduck.inkwell.transcriber.models.ModelItem
 import com.variableduck.inkwell.transcriber.share.ExportFormat
 import com.variableduck.inkwell.transcriber.share.ShareExport
 import com.variableduck.inkwell.transcriber.transcribe.TranscriptionService
@@ -21,6 +22,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.receiveAsFlow
@@ -33,6 +35,11 @@ class NoteViewModel(private val c: AppContainer, val id: String) : ViewModel() {
     val entry: StateFlow<NoteEntry?> = c.notes.notes
         .map { list -> list.firstOrNull { it.id == id } }
         .stateIn(viewModelScope, SharingStarted.Eagerly, c.notes.entry(id))
+
+    /** The model a new transcription will use, or null if none is installed. */
+    val activeModel: StateFlow<ModelItem?> = combine(c.models.items, c.settings.state) { items, s ->
+        items.firstOrNull { it.id == s.activeModelId && it.installed }
+    }.stateIn(viewModelScope, SharingStarted.Eagerly, c.models.activeModel())
 
     var editor by mutableStateOf(TextFieldValue(""))
         private set
@@ -96,6 +103,10 @@ class NoteViewModel(private val c: AppContainer, val id: String) : ViewModel() {
     fun transcribe(restart: Boolean) {
         saveIfDirty()
         viewModelScope.launch { c.requestTranscription(id, restart)?.let { message(it) } }
+    }
+
+    fun dismissWarning() {
+        viewModelScope.launch { c.notes.update(id) { it.copy(warning = null) } }
     }
 
     fun cancelTranscription(context: Context) {

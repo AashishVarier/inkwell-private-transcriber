@@ -14,6 +14,16 @@ import kotlin.coroutines.coroutineContext
  */
 class ChunkedTranscriber(private val notes: NoteRepository) {
 
+    /** What this run saw, used to explain an empty or incomplete transcript. */
+    data class Result(
+        /** Chunks with sound that were given to Whisper. */
+        val speechChunks: Int = 0,
+        /** Chunks where Whisper said the speech was in a language it doesn't transcribe. */
+        val foreignChunks: Int = 0,
+        /** Chunks where Whisper repeated one sentence over and over (it didn't understand). */
+        val repetitiveChunks: Int = 0,
+    )
+
     /**
      * @param transcribeChunk runs Whisper on 16 kHz float samples with the given prompt.
      * @param onProgress called after each chunk with progress 0..1.
@@ -23,8 +33,11 @@ class ChunkedTranscriber(private val notes: NoteRepository) {
         removeTags: Boolean,
         transcribeChunk: suspend (samples: FloatArray, prompt: String) -> String,
         onProgress: (Float) -> Unit = {},
-    ) {
-        val prepared = notes.prepareTranscript(id, restart = false) ?: return
+    ): Result {
+        val prepared = notes.prepareTranscript(id, restart = false) ?: return Result()
+        var speechChunks = 0
+        var foreignChunks = 0
+        var repetitiveChunks = 0
         WavReader(notes.audioFile(id)).use { reader ->
             val total = reader.totalSamples
             var position = prepared.doneSamples.coerceIn(0, total)
@@ -52,6 +65,9 @@ class ChunkedTranscriber(private val notes: NoteRepository) {
                     val prompt = TextCleaner.promptTail(notes.textTail(id, PROMPT_READ_CHARS))
                     val raw = transcribeChunk(ChunkPlanner.toFloat(window, length), prompt)
                     coroutineContext.ensureActive()
+                    speechChunks++
+                    if (TextCleaner.mentionsForeignLanguage(raw)) foreignChunks++
+                    if (TextCleaner.looksRepetitive(raw)) repetitiveChunks++
                     val cleaned = TextCleaner.clean(raw, removeTags)
                     piece = TextCleaner.joinPiece(notes.textTail(id, 1), cleaned)
                 }
@@ -61,6 +77,7 @@ class ChunkedTranscriber(private val notes: NoteRepository) {
                 onProgress(progress)
             }
         }
+        return Result(speechChunks, foreignChunks, repetitiveChunks)
     }
 
     private companion object {

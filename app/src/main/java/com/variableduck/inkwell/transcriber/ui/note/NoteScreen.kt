@@ -7,6 +7,8 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -67,9 +69,11 @@ import com.variableduck.inkwell.transcriber.data.NoteEntry
 import com.variableduck.inkwell.transcriber.data.NoteNames
 import com.variableduck.inkwell.transcriber.data.NoteRepository.DeleteWhat
 import com.variableduck.inkwell.transcriber.data.NoteStatus
+import com.variableduck.inkwell.transcriber.models.ModelItem
 import com.variableduck.inkwell.transcriber.share.ExportFormat
 import com.variableduck.inkwell.transcriber.share.ShareExport
 import com.variableduck.inkwell.transcriber.ui.Navigator
+import com.variableduck.inkwell.transcriber.ui.Routes
 import com.variableduck.inkwell.transcriber.ui.common.DeleteDialog
 import com.variableduck.inkwell.transcriber.ui.common.deleteOptionLabel
 import com.variableduck.inkwell.transcriber.ui.common.isOptionAvailable
@@ -82,6 +86,7 @@ fun NoteScreen(id: String, nav: Navigator) {
     val app = context.container
     val vm: NoteViewModel = viewModel(key = "note-$id") { NoteViewModel(app, id) }
     val entry by vm.entry.collectAsStateWithLifecycle()
+    val activeModel by vm.activeModel.collectAsStateWithLifecycle()
     val snackbar = remember { SnackbarHostState() }
 
     var menu by remember { mutableStateOf(false) }
@@ -121,7 +126,6 @@ fun NoteScreen(id: String, nav: Navigator) {
     }
     if (current == null) return
     val note = current.note
-
 
     Scaffold(
         topBar = {
@@ -205,9 +209,12 @@ fun NoteScreen(id: String, nav: Navigator) {
             NoteHeader(current)
             StatusArea(
                 entry = current,
+                activeModel = activeModel,
                 onTranscribe = { vm.transcribe(restart = false) },
                 onStartOver = { confirmRestart = true },
                 onCancel = { vm.cancelTranscription(context) },
+                onChooseModel = { vm.saveIfDirty(); nav.open(Routes.MODELS) },
+                onDismissWarning = vm::dismissWarning,
             )
             HorizontalDivider()
             TranscriptArea(vm, current, Modifier.weight(1f))
@@ -298,12 +305,16 @@ private fun NoteHeader(entry: NoteEntry) {
     }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun StatusArea(
     entry: NoteEntry,
+    activeModel: ModelItem?,
     onTranscribe: () -> Unit,
     onStartOver: () -> Unit,
     onCancel: () -> Unit,
+    onChooseModel: () -> Unit,
+    onDismissWarning: () -> Unit,
 ) {
     val note = entry.note
     val modifier = Modifier
@@ -342,24 +353,54 @@ private fun StatusArea(
                         style = MaterialTheme.typography.bodyMedium,
                     )
                 }
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Button(onClick = onTranscribe) {
+                Text(
+                    activeModel?.let { "Model: ${it.displayName}" }
+                        ?: "No model installed yet. Download or import one to transcribe.",
+                    Modifier.padding(top = 4.dp),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    if (activeModel != null) {
+                        Button(onClick = onTranscribe) {
+                            Text(
+                                when {
+                                    note.hasPartialTranscript -> "Resume"
+                                    note.status == NoteStatus.FAILED -> "Try again"
+                                    else -> "Transcribe"
+                                },
+                            )
+                        }
+                    }
+                    OutlinedButton(onClick = onChooseModel) {
                         Text(
                             when {
-                                note.hasPartialTranscript -> "Resume"
-                                note.status == NoteStatus.FAILED -> "Try again"
-                                else -> "Transcribe"
+                                activeModel == null -> "Get a model"
+                                note.status == NoteStatus.FAILED -> "Choose model"
+                                else -> "Change model"
                             },
                         )
                     }
-                    if (note.hasPartialTranscript) {
-                        OutlinedButton(onClick = onStartOver) { Text("Start over") }
+                    if (note.hasPartialTranscript && activeModel != null) {
+                        TextButton(onClick = onStartOver) { Text("Start over") }
                     }
                 }
                 Spacer(Modifier.height(4.dp))
             }
         }
-        NoteStatus.DONE -> Unit
+        NoteStatus.DONE -> note.warning?.let { warning ->
+            Column(modifier) {
+                Text(warning, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.error)
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    if (entry.hasAudio) {
+                        OutlinedButton(onClick = onChooseModel) { Text("Choose model") }
+                        Button(onClick = onStartOver) { Text("Transcribe again") }
+                    }
+                    TextButton(onClick = onDismissWarning) { Text("Dismiss") }
+                }
+                Spacer(Modifier.height(4.dp))
+            }
+        }
     }
 }
 

@@ -167,11 +167,14 @@ class TranscriptionService : Service() {
             c.engine.load(c.models.file(model.id))
             val language = if (c.engine.isMultilingual) settings.language else "en"
             notes.update(id) {
-                it.copy(status = NoteStatus.TRANSCRIBING, modelName = model.displayName, language = language, error = null)
+                it.copy(
+                    status = NoteStatus.TRANSCRIBING, modelName = model.displayName, language = language,
+                    error = null, warning = null,
+                )
             }
             updateNotification(force = true)
 
-            ChunkedTranscriber(notes).run(
+            val result = ChunkedTranscriber(notes).run(
                 id = id,
                 removeTags = settings.removeTags,
                 transcribeChunk = { samples, prompt ->
@@ -183,13 +186,39 @@ class TranscriptionService : Service() {
                 },
             )
 
-            notes.update(id) { it.copy(status = NoteStatus.DONE, progress = 1f, error = null, doneSamples = 0) }
-            if (!c.settings.value.keepAudio) {
-                notes.delete(listOf(id), NoteRepository.DeleteWhat.AUDIO)
+            val check = TranscriptCheck.evaluate(
+                hasWords = withContext(Dispatchers.IO) { TextCleaner.hasWords(notes.readText(id)) },
+                run = result,
+                modelName = model.displayName,
+                multilingual = c.engine.isMultilingual,
+                language = language,
+            )
+            val keepAudio = c.settings.value.keepAudio
+            val title = when (check) {
+                is TranscriptCheck.Empty -> {
+                    // Nothing usable: start from the beginning next time. The recording is always
+                    // kept here, whatever the keep-audio setting, so it can be tried again.
+                    notes.update(id) {
+                        it.copy(status = NoteStatus.FAILED, error = check.message, progress = 0f, doneSamples = 0, textBytes = 0)
+                    }
+                    "Nothing was transcribed"
+                }
+                is TranscriptCheck.Incomplete -> {
+                    // Parts are missing: keep the recording so it can be transcribed again.
+                    val warning = check.message + if (keepAudio) "" else " The recording has been kept for that."
+                    notes.update(id) {
+                        it.copy(status = NoteStatus.DONE, progress = 1f, error = null, warning = warning, doneSamples = 0)
+                    }
+                    "Transcript ready, with parts left out"
+                }
+                TranscriptCheck.Ok -> {
+                    notes.update(id) { it.copy(status = NoteStatus.DONE, progress = 1f, error = null, doneSamples = 0) }
+                    if (!keepAudio) notes.delete(listOf(id), NoteRepository.DeleteWhat.AUDIO)
+                    "Transcript ready"
+                }
             }
             Notifications.alert(
-                this, Notifications.ID_TRANSCRIPT_READY, "Transcript ready", queued.title,
-                Notifications.CHANNEL_TRANSCRIPTION,
+                this, Notifications.ID_TRANSCRIPT_READY, title, queued.title, Notifications.CHANNEL_TRANSCRIPTION,
             )
         } catch (e: Exception) {
             if (e is CancellationException || !currentCoroutineContext().isActive) {

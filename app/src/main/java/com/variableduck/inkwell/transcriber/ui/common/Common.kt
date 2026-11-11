@@ -156,7 +156,11 @@ fun statusLabel(entry: NoteEntry): String? {
         NoteStatus.FAILED -> "Transcription failed"
         NoteStatus.RECORDED ->
             if (note.hasPartialTranscript) "Partly transcribed (${Format.percent(note.progress)})" else "Not transcribed"
-        NoteStatus.DONE -> if (!entry.hasAudio) "Text only" else null
+        NoteStatus.DONE -> when {
+            note.warning != null -> "Parts left out"
+            !entry.hasAudio -> "Text only"
+            else -> null
+        }
     }
 }
 

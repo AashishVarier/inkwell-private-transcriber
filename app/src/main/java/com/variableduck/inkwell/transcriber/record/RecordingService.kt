@@ -144,12 +144,9 @@ class RecordingService : Service() {
                 notes.update(r.noteId) { it.copy(status = NoteStatus.RECORDED) }
                 notes.delete(listOf(r.noteId), NoteRepository.DeleteWhat.BOTH)
             } else {
+                // Saved and ready; the user starts transcription from the note when they want it.
                 notes.update(r.noteId) {
                     it.copy(status = NoteStatus.RECORDED, durationMs = Wav.durationMs(bytes), error = null)
-                }
-                if (bytes >= Wav.BYTES_PER_SECOND / 2) {
-                    // Auto-transcribe with the active model (no-op if none is installed).
-                    container.requestTranscription(r.noteId)
                 }
             }
             r.stopReason?.let { reason ->

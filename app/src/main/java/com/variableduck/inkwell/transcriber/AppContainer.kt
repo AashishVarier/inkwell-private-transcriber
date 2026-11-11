@@ -52,6 +52,7 @@ class AppContainer(context: Context) {
                 status = NoteStatus.QUEUED,
                 queuedAt = System.currentTimeMillis(),
                 error = null,
+                warning = null,
                 doneSamples = if (restart) 0 else it.doneSamples,
                 textBytes = if (restart) 0 else it.textBytes,
                 progress = if (restart) 0f else it.progress,

@@ -88,6 +88,12 @@ object TextCleaner {
             """sighs|coughs|clears throat|beep|music playing)\s*[)*]""",
         RegexOption.IGNORE_CASE,
     )
+    // What English-only models write for speech they can't understand, in many variants:
+    // (speaking in foreign language), (singing in foreign language), [FOREIGN LANGUAGE], ...
+    private val foreignTag = Regex(
+        """[(\[*][^()\[\]*\n]{0,40}\b(?:foreign|non-english)\b[^()\[\]*\n]{0,40}[)\]*]""",
+        RegexOption.IGNORE_CASE,
+    )
     private val musicSymbols = Regex("[♪♫♬♩]+")
     private val spaces = Regex("[ \\t]{2,}")
 
@@ -95,12 +101,40 @@ object TextCleaner {
     fun clean(raw: String, removeTags: Boolean): String {
         var t = raw
         if (removeTags) {
+            t = foreignTag.replace(t, " ")
             t = bracketTags.replace(t, " ")
             t = nonSpeech.replace(t, " ")
             t = musicSymbols.replace(t, " ")
         }
         return spaces.replace(t, " ").trim()
     }
+
+    /** True if Whisper marked speech in this output as a language it doesn't transcribe. */
+    fun mentionsForeignLanguage(raw: String): Boolean = foreignTag.containsMatchIn(raw)
+
+    private val sentenceEnd = Regex("""(?<=[.!?])\s+""")
+
+    /**
+     * True if Whisper got stuck repeating one sentence (3+ times in a row), which is what it
+     * does with speech it can't understand. Real dictation almost never does that.
+     */
+    fun looksRepetitive(raw: String): Boolean {
+        var previous = ""
+        var run = 1
+        for (sentence in raw.trim().split(sentenceEnd)) {
+            val s = sentence.trim().lowercase()
+            if (s.count { it == ' ' } >= 2 && s == previous) {
+                if (++run >= 3) return true
+            } else {
+                run = 1
+            }
+            previous = s
+        }
+        return false
+    }
+
+    /** True if [text] contains actual words once non-speech tags are ignored. */
+    fun hasWords(text: String): Boolean = clean(text, removeTags = true).any { it.isLetterOrDigit() }
 
     /** Text to append after [previousTail] so chunks join with exactly one space. */
     fun joinPiece(previousTail: String, chunk: String): String {

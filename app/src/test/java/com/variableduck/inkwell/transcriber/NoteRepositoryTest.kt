@@ -85,6 +85,18 @@ class NoteRepositoryTest {
     }
 
     @Test
+    fun reportsSpeechTheModelCouldNotTranscribe() = runBlocking<Unit> {
+        // What an English-only model returns for speech in another language.
+        val note = newRecordedNote(70)
+        val result = ChunkedTranscriber(repo).run(note.id, true, transcribeChunk = { _, _ ->
+            " (speaking in foreign language)"
+        })
+        assertEquals(3, result.speechChunks)
+        assertEquals(3, result.foreignChunks)
+        assertEquals("", repo.readText(note.id))
+    }
+
+    @Test
     fun resumesAfterInterruptionWithoutDuplicatesOrPartialText() = runBlocking<Unit> {
         val note = newRecordedNote(120)
         var calls = 0
