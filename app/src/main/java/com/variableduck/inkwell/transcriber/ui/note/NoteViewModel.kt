@@ -2,6 +2,7 @@ package com.variableduck.inkwell.transcriber.ui.note
 
 import android.content.Context
 import android.net.Uri
+import android.util.Log
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
@@ -19,7 +20,10 @@ import com.variableduck.inkwell.transcriber.models.ModelItem
 import com.variableduck.inkwell.transcriber.share.ExportFormat
 import com.variableduck.inkwell.transcriber.share.ShareExport
 import com.variableduck.inkwell.transcriber.transcribe.TranscriptionService
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -83,6 +87,13 @@ class NoteViewModel(private val c: AppContainer, val id: String) : ViewModel() {
         _messages.trySend(text)
     }
 
+    /**
+     * Runs work that must finish even when the user leaves the note (which clears this
+     * ViewModel), on the main thread like viewModelScope.
+     */
+    private fun launchInApp(block: suspend CoroutineScope.() -> Unit): Job =
+        c.scope.launch(Dispatchers.Main.immediate, block = block)
+
     val currentText: String get() = editor.text
 
     fun onEdit(value: TextFieldValue) {
@@ -110,22 +121,30 @@ class NoteViewModel(private val c: AppContainer, val id: String) : ViewModel() {
     fun rename(title: String) {
         val note = entry.value?.note ?: return
         val clean = title.trim().ifEmpty { NoteNames.displayTimestamp(note.createdAt) }
-        viewModelScope.launch { c.notes.update(id) { it.copy(title = clean) } }
+        launchInApp { c.notes.update(id) { it.copy(title = clean) } }
     }
 
     fun transcribe(restart: Boolean) {
-        saveIfDirty()
-        viewModelScope.launch { c.requestTranscription(id, restart)?.let { message(it) } }
+        val pending = if (dirty) editor.text else null
+        dirty = false
+        launchInApp {
+            saveEditsThenQueue(
+                pending = pending,
+                save = { c.notes.saveText(id, it) },
+                queue = { c.requestTranscription(id, restart) },
+                onSaveFailed = { dirty = true },
+            )?.let { message(it) }
+        }
     }
 
     fun dismissWarning() {
-        viewModelScope.launch { c.notes.update(id) { it.copy(warning = null) } }
+        launchInApp { c.notes.update(id) { it.copy(warning = null) } }
     }
 
     fun cancelTranscription(context: Context) {
         when (entry.value?.note?.status) {
             NoteStatus.TRANSCRIBING -> TranscriptionService.cancelCurrent(context)
-            NoteStatus.QUEUED -> viewModelScope.launch {
+            NoteStatus.QUEUED -> launchInApp {
                 c.notes.update(id) { if (it.status == NoteStatus.QUEUED) it.copy(status = NoteStatus.RECORDED) else it }
             }
             else -> Unit
@@ -141,9 +160,13 @@ class NoteViewModel(private val c: AppContainer, val id: String) : ViewModel() {
     fun delete(what: DeleteWhat) {
         if (!canDelete()) return
         dirty = false
-        viewModelScope.launch {
+        launchInApp {
             try {
                 c.notes.delete(listOf(id), what)
+                if (what != DeleteWhat.AUDIO) {
+                    // Don't leave a shared copy of a deleted transcript behind.
+                    withContext(Dispatchers.IO) { ShareExport.forget(c.appContext.cacheDir, listOf(id)) }
+                }
                 if (what == DeleteWhat.TEXT) {
                     editor = TextFieldValue("")
                 }
@@ -163,7 +186,14 @@ class NoteViewModel(private val c: AppContainer, val id: String) : ViewModel() {
     fun shareText(context: Context) {
         val note = entry.value?.note ?: return
         if (currentText.isBlank()) return message("There's no text to share yet.")
-        ShareExport.shareText(context, note, currentText)
+        try {
+            ShareExport.shareText(context, note, currentText)
+        } catch (e: RuntimeException) {
+            // A very long transcript doesn't fit in an Intent (TransactionTooLargeException).
+            Log.w(TAG, "Couldn't share as text", e)
+            message("This transcript is too long to share as text, so it's shared as a .txt file.")
+            shareFile(context)
+        }
     }
 
     fun shareFile(context: Context) {
@@ -175,7 +205,13 @@ class NoteViewModel(private val c: AppContainer, val id: String) : ViewModel() {
     fun copy(context: Context) {
         val note = entry.value?.note ?: return
         if (currentText.isBlank()) return message("There's no text to copy yet.")
-        ShareExport.copyToClipboard(context, note.title, currentText)
+        try {
+            ShareExport.copyToClipboard(context, note.title, currentText)
+        } catch (e: RuntimeException) {
+            // A very long transcript doesn't fit on the clipboard (TransactionTooLargeException).
+            Log.w(TAG, "Couldn't copy", e)
+            return message("This transcript is too long to copy. Share it as a .txt file or export it instead.")
+        }
         // Android 13+ shows its own confirmation.
         if (android.os.Build.VERSION.SDK_INT < android.os.Build.VERSION_CODES.TIRAMISU) message("Copied")
     }
@@ -183,7 +219,7 @@ class NoteViewModel(private val c: AppContainer, val id: String) : ViewModel() {
     fun export(context: Context, uri: Uri, format: ExportFormat) {
         val note = entry.value?.note ?: return
         val content = ShareExport.render(note, currentText, format)
-        viewModelScope.launch {
+        launchInApp {
             try {
                 ShareExport.exportTo(context, uri, content)
                 message("Exported ${ShareExport.fileName(note, format)}")
@@ -192,4 +228,32 @@ class NoteViewModel(private val c: AppContainer, val id: String) : ViewModel() {
             }
         }
     }
+
+    private companion object {
+        const val TAG = "NoteViewModel"
+    }
+}
+
+/**
+ * Saves [pending] edits (if any) and only then queues the transcription. Queueing first makes
+ * the note busy, so the save would be rejected and the stale editor text could later be saved
+ * over the new transcript. Returns the message to show, or null.
+ */
+internal suspend fun saveEditsThenQueue(
+    pending: String?,
+    save: suspend (String) -> Unit,
+    queue: suspend () -> String?,
+    onSaveFailed: () -> Unit,
+): String? {
+    if (pending != null) {
+        try {
+            save(pending)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            onSaveFailed()
+            return "Couldn't save your edits, so transcription wasn't started: ${e.message}"
+        }
+    }
+    return queue()
 }

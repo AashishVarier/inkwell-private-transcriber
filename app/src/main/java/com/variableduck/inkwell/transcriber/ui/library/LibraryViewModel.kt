@@ -14,6 +14,7 @@ import com.variableduck.inkwell.transcriber.share.ExportFormat
 import com.variableduck.inkwell.transcriber.share.ShareExport
 import com.variableduck.inkwell.transcriber.transcribe.TranscriptionService
 import com.variableduck.inkwell.transcriber.transcribe.TranscriptionStatus
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -21,6 +22,7 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 class LibraryViewModel(private val c: AppContainer) : ViewModel() {
 
@@ -65,6 +67,10 @@ class LibraryViewModel(private val c: AppContainer) : ViewModel() {
         viewModelScope.launch {
             try {
                 c.notes.delete(ids, what)
+                if (what != DeleteWhat.AUDIO) {
+                    // Don't leave shared copies of deleted transcripts behind.
+                    withContext(Dispatchers.IO) { ShareExport.forget(c.appContext.cacheDir, ids) }
+                }
                 message(if (ids.size == 1) "Deleted" else "Deleted from ${ids.size} notes")
             } catch (e: Exception) {
                 message(e.message ?: "Couldn't delete")

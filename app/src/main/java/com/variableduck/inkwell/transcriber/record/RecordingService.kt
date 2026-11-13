@@ -31,6 +31,7 @@ import com.variableduck.inkwell.transcriber.data.NoteRepository
 import com.variableduck.inkwell.transcriber.data.NoteStatus
 import com.variableduck.inkwell.transcriber.util.Format
 import com.variableduck.inkwell.transcriber.util.Notifications
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -116,7 +117,20 @@ class RecordingService : Service() {
 
         val startedAt = System.currentTimeMillis()
         scope.launch {
-            val note = container.notes.createForRecording(startedAt)
+            val note = try {
+                container.notes.createForRecording(startedAt)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                // e.g. storage is completely full: report it instead of crashing.
+                Log.e(TAG, "Couldn't create the note", e)
+                withContext(Dispatchers.Main) {
+                    RecordingStatus.update { RecorderState(error = "Couldn't start recording: ${e.message}") }
+                    ServiceCompat.stopForeground(this@RecordingService, ServiceCompat.STOP_FOREGROUND_REMOVE)
+                    stopSelf()
+                }
+                return@launch
+            }
             noteTitle = note.title
             val file = container.notes.audioFile(note.id)
             withContext(Dispatchers.Main) {
@@ -139,21 +153,30 @@ class RecordingService : Service() {
         container.scope.launch(Dispatchers.IO) {
             val notes = container.notes
             val bytes = r.dataBytes
-            if (bytes == 0L) {
-                // Nothing was captured at all: don't leave an empty note behind.
-                notes.update(r.noteId) { it.copy(status = NoteStatus.RECORDED) }
-                notes.delete(listOf(r.noteId), NoteRepository.DeleteWhat.BOTH)
-            } else {
-                // Saved and ready; the user starts transcription from the note when they want it.
-                notes.update(r.noteId) {
-                    it.copy(status = NoteStatus.RECORDED, durationMs = Wav.durationMs(bytes), error = null)
+            // The WAV is already closed. If the note's details can't be written (storage full),
+            // say so instead of crashing; startup recovery finishes the note next launch.
+            val saveError = try {
+                if (bytes == 0L) {
+                    // Nothing was captured at all: don't leave an empty note behind.
+                    notes.update(r.noteId) { it.copy(status = NoteStatus.RECORDED) }
+                    notes.delete(listOf(r.noteId), NoteRepository.DeleteWhat.BOTH)
+                } else {
+                    // Saved and ready; the user starts transcription from the note when they want it.
+                    notes.update(r.noteId) {
+                        it.copy(status = NoteStatus.RECORDED, durationMs = Wav.durationMs(bytes), error = null)
+                    }
                 }
+                null
+            } catch (e: Exception) {
+                Log.e(TAG, "Couldn't finish saving note ${r.noteId}", e)
+                "Inkwell couldn't finish saving this recording's details (storage may be full). " +
+                    "It will be fixed the next time Inkwell opens."
             }
-            r.stopReason?.let { reason ->
+            (r.stopReason ?: saveError)?.let { reason ->
                 Notifications.alert(this@RecordingService, Notifications.ID_STORAGE, "Recording stopped", reason)
             }
             withContext(Dispatchers.Main) {
-                RecordingStatus.update { RecorderState(error = r.error) }
+                RecordingStatus.update { RecorderState(error = r.error ?: saveError) }
                 recorder = null
                 ServiceCompat.stopForeground(this@RecordingService, ServiceCompat.STOP_FOREGROUND_REMOVE)
                 stopSelf()
@@ -258,18 +281,27 @@ class RecordingService : Service() {
             val minBuffer = AudioRecord.getMinBufferSize(
                 Wav.SAMPLE_RATE, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT,
             )
-            val bufferBytes = maxOf(minBuffer * 4, Wav.BYTES_PER_SECOND)
+            val smallBufferBytes = maxOf(minBuffer * 4, Wav.BYTES_PER_SECOND)
+            // 4 s of headroom, so a slow flush to storage (syncHeader) can't overflow the
+            // microphone buffer and silently drop audio.
+            val bufferBytes = maxOf(smallBufferBytes, Wav.BYTES_PER_SECOND * 4)
+            fun openRecord(bytes: Int) = AudioRecord(
+                MediaRecorder.AudioSource.MIC,
+                Wav.SAMPLE_RATE,
+                AudioFormat.CHANNEL_IN_MONO,
+                AudioFormat.ENCODING_PCM_16BIT,
+                bytes,
+            )
             var record: AudioRecord? = null
             var writer: WavWriter? = null
             try {
                 writer = WavWriter(file)
-                record = AudioRecord(
-                    MediaRecorder.AudioSource.MIC,
-                    Wav.SAMPLE_RATE,
-                    AudioFormat.CHANNEL_IN_MONO,
-                    AudioFormat.ENCODING_PCM_16BIT,
-                    bufferBytes,
-                )
+                record = openRecord(bufferBytes)
+                if (record.state != AudioRecord.STATE_INITIALIZED) {
+                    // In case a device refuses the larger buffer, fall back to the previous size.
+                    record.release()
+                    record = openRecord(smallBufferBytes)
+                }
                 if (record.state != AudioRecord.STATE_INITIALIZED) {
                     error = "The microphone couldn't be opened."
                     return

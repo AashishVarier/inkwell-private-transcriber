@@ -54,6 +54,8 @@ class TranscriptionService : Service() {
     private var queueJob: Job? = null
     @Volatile private var noteJob: Job? = null
     @Volatile private var timedOut = false
+    /** Set when a note's state couldn't be saved (e.g. storage full): the queue stops. */
+    @Volatile private var saveFailed = false
     private var wakeLock: PowerManager.WakeLock? = null
     private var lastNotificationAt = 0L
 
@@ -70,6 +72,7 @@ class TranscriptionService : Service() {
                 if (!goForeground()) return START_NOT_STICKY
                 if (queueJob?.isActive != true) {
                     timedOut = false
+                    saveFailed = false
                     queueJob = scope.launch { runQueue() }
                 }
             }
@@ -118,7 +121,7 @@ class TranscriptionService : Service() {
         acquireWakeLock()
         TranscriptionStatus.update { it.copy(running = true) }
         try {
-            while (!timedOut) {
+            while (!timedOut && !saveFailed) {
                 val note = c.notes.nextQueued() ?: break
                 val model = c.models.activeModel()
                 if (model == null) {
@@ -139,7 +142,9 @@ class TranscriptionService : Service() {
                 withContext(Dispatchers.Main) {
                     // Decided on the main thread, where start commands arrive, so a note queued
                     // while this run was finishing is not left waiting.
-                    if (!timedOut && scope.isActive && c.notes.hasQueued() && c.models.activeModel() != null) {
+                    if (!timedOut && !saveFailed && scope.isActive && c.notes.hasQueued() &&
+                        c.models.activeModel() != null
+                    ) {
                         queueJob = scope.launch { runQueue() }
                     } else {
                         TranscriptionStatus.update { TranscriptionState() }
@@ -190,8 +195,15 @@ class TranscriptionService : Service() {
                     ?: ProgressEstimator.DEFAULT_GUESS_MS_PER_AUDIO_SECOND,
             )
             val ticker = scope.launch {
+                var lockedAt = SystemClock.elapsedRealtime()
                 while (true) {
                     publish(estimator)
+                    // The wake lock times out after 4 h; keep it fresh for very long recordings.
+                    val now = SystemClock.elapsedRealtime()
+                    if (now - lockedAt >= WAKE_LOCK_REFRESH_MS) {
+                        acquireWakeLock()
+                        lockedAt = now
+                    }
                     delay(TICK_MS)
                 }
             }
@@ -252,16 +264,41 @@ class TranscriptionService : Service() {
                 withContext(NonCancellable) {
                     // Keep the checkpoint. After a system time-out, queue it to resume
                     // automatically; after the user's Cancel, leave it ready to resume by hand.
-                    notes.update(id) {
+                    saveStatus(id) {
                         it.copy(status = if (timedOut) NoteStatus.QUEUED else NoteStatus.RECORDED)
                     }
                 }
                 throw e as? CancellationException ?: CancellationException("Cancelled")
             }
             Log.e(TAG, "Transcription of $id failed", e)
-            notes.update(id) { it.copy(status = NoteStatus.FAILED, error = e.message ?: "Transcription failed") }
+            saveStatus(id) { it.copy(status = NoteStatus.FAILED, error = e.message ?: "Transcription failed") }
         } finally {
             c.engine.clearAbort()
+        }
+    }
+
+    /**
+     * Saves a note's state after a failure or a cancel. If even that can't be written (e.g.
+     * storage is full), the queue stops instead of retrying the same note over and over; the
+     * note resumes from its checkpoint the next time the app is opened.
+     */
+    private suspend fun saveStatus(id: String, transform: (Note) -> Note) {
+        try {
+            container.notes.update(id, transform)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.e(TAG, "Couldn't save the state of $id; pausing the queue", e)
+            if (!saveFailed) {
+                saveFailed = true
+                Notifications.alert(
+                    this,
+                    Notifications.ID_STORAGE,
+                    "Transcription paused",
+                    "Inkwell couldn't save its progress (storage may be full). " +
+                        "Free up some space, then open Inkwell to continue.",
+                )
+            }
         }
     }
 
@@ -335,6 +372,7 @@ class TranscriptionService : Service() {
         private const val ACTION_START = "inkwell.transcribe.START"
         private const val ACTION_CANCEL = "inkwell.transcribe.CANCEL"
         private const val WAKE_LOCK_TIMEOUT_MS = 4L * 60 * 60 * 1000
+        private const val WAKE_LOCK_REFRESH_MS = 60L * 60 * 1000
         private const val TICK_MS = 250L
 
         /** Measured speed per model and thread count (ms of work per second of audio). */

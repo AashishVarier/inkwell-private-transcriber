@@ -32,6 +32,11 @@ class NoteRepository(val dir: File) {
     private val _notes = MutableStateFlow<List<NoteEntry>>(emptyList())
     val notes: StateFlow<List<NoteEntry>> = _notes.asStateFlow()
 
+    private val _loaded = MutableStateFlow(false)
+
+    /** True once [loadAndRecover] has finished, so an empty [notes] list is meaningful. */
+    val loaded: StateFlow<Boolean> = _loaded.asStateFlow()
+
     fun audioFile(id: String) = File(dir, "$id.wav")
     fun textFile(id: String) = File(dir, "$id.txt")
     private fun metaFile(id: String) = File(dir, "$id.json")
@@ -43,23 +48,27 @@ class NoteRepository(val dir: File) {
      * Called once when the process starts, before any recording or transcription can run.
      */
     suspend fun loadAndRecover() = withContext(Dispatchers.IO) {
-        mutex.withLock {
-            dir.mkdirs()
-            // Leftover temp files from interrupted atomic writes.
-            dir.listFiles { f -> f.name.endsWith(".tmp") }?.forEach { it.delete() }
-            val loaded = dir.listFiles { f -> f.name.endsWith(".json") }.orEmpty()
-                .mapNotNull { f ->
-                    try {
-                        json.decodeFromString(Note.serializer(), f.readText())
-                    } catch (e: Exception) {
-                        Log.w(TAG, "Skipping unreadable note ${f.name}", e)
-                        null
+        try {
+            mutex.withLock {
+                dir.mkdirs()
+                // Leftover temp files from interrupted atomic writes.
+                dir.listFiles { f -> f.name.endsWith(".tmp") }?.forEach { it.delete() }
+                val loaded = dir.listFiles { f -> f.name.endsWith(".json") }.orEmpty()
+                    .mapNotNull { f ->
+                        try {
+                            json.decodeFromString(Note.serializer(), f.readText())
+                        } catch (e: Exception) {
+                            Log.w(TAG, "Skipping unreadable note ${f.name}", e)
+                            null
+                        }
                     }
-                }
-                .map { recover(it) }
-            _notes.value = loaded.map { entryFor(it) }.sortedByDescending { it.note.createdAt }
+                    .map { recover(it) }
+                _notes.value = loaded.map { entryFor(it) }.sortedByDescending { it.note.createdAt }
+            }
+        } finally {
+            _loaded.value = true
+            ready.complete(Unit)
         }
-        ready.complete(Unit)
     }
 
     private fun recover(note: Note): Note = when (note.status) {
@@ -82,15 +91,27 @@ class NoteRepository(val dir: File) {
                 note.copy(status = NoteStatus.RECORDED, recovered = true)
             }
             Log.i(TAG, "Recovered interrupted recording ${note.id}")
-            writeMeta(recovered)
+            persistRecovered(recovered)
             recovered
         }
         NoteStatus.TRANSCRIBING -> {
             val requeued = note.copy(status = NoteStatus.QUEUED)
-            writeMeta(requeued)
+            persistRecovered(requeued)
             requeued
         }
         else -> note
+    }
+
+    /**
+     * Saves a recovered note. If that fails (e.g. storage is full) the recovered state is kept in
+     * memory and recovery simply runs again at the next launch, instead of crashing every start.
+     */
+    private fun persistRecovered(note: Note) {
+        try {
+            writeMeta(note)
+        } catch (e: Exception) {
+            Log.w(TAG, "Couldn't save recovered note ${note.id}; will retry next launch", e)
+        }
     }
 
     suspend fun awaitReady() = ready.await()

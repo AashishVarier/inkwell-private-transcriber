@@ -57,7 +57,7 @@ object ShareExport {
 
     /** Share sheet with the transcript attached as a `.txt` file (via FileProvider). */
     fun shareFile(context: Context, note: Note, text: String) {
-        val dir = File(context.cacheDir, "share").apply { mkdirs() }
+        val dir = File(context.cacheDir, SHARE_DIR).apply { mkdirs() }
         // Only the file being shared is kept in the share cache.
         dir.listFiles()?.forEach { it.delete() }
         val file = File(dir, fileName(note, ExportFormat.TXT))
@@ -74,6 +74,22 @@ object ShareExport {
             Intent.createChooser(send, "Share ${file.name}")
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_GRANT_READ_URI_PERMISSION),
         )
+    }
+
+    private const val SHARE_DIR = "share"
+    private const val STALE_SHARE_MS = 24L * 60 * 60 * 1000
+
+    /** Deletes the shared copy of these notes' transcripts, after the transcripts are deleted. */
+    fun forget(cacheDir: File, ids: Collection<String>) {
+        val dir = File(cacheDir, SHARE_DIR)
+        ids.forEach { id -> File(dir, "$id.${ExportFormat.TXT.extension}").delete() }
+    }
+
+    /** Deletes shared copies older than a day; the receiving app has long finished with them. */
+    fun purgeStale(cacheDir: File, now: Long = System.currentTimeMillis()) {
+        File(cacheDir, SHARE_DIR).listFiles()?.forEach { f ->
+            if (now - f.lastModified() > STALE_SHARE_MS) f.delete()
+        }
     }
 
     fun copyToClipboard(context: Context, label: String, text: String) {

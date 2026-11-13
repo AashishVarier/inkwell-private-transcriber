@@ -222,7 +222,8 @@ class ModelRepository(
                     }
                 } ?: return@withContext "Couldn't open the file."
 
-                if (!hasGgmlMagic(tmp)) {
+                // Checked in Kotlin first: some malformed headers make whisper.cpp abort the app.
+                if (!ModelHeader.isSane(tmp)) {
                     return@withContext "That file isn't a GGML whisper model."
                 }
                 val probe = WhisperEngine.probe(context, tmp)
@@ -248,16 +249,6 @@ class ModelRepository(
                 _importing.value = false
             }
         }
-    }
-
-    /** whisper.cpp GGML files start with the 32-bit magic 0x67676d6c ("ggml"), little-endian. */
-    private fun hasGgmlMagic(file: File): Boolean {
-        if (file.length() < 4) return false
-        val b = ByteArray(4)
-        file.inputStream().use { if (it.read(b) != 4) return false }
-        val magic = (b[0].toLong() and 0xFF) or ((b[1].toLong() and 0xFF) shl 8) or
-            ((b[2].toLong() and 0xFF) shl 16) or ((b[3].toLong() and 0xFF) shl 24)
-        return magic == 0x67676d6cL
     }
 
     // ---- Internals ------------------------------------------------------------------------

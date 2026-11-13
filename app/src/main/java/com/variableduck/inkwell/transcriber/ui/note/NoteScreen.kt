@@ -144,9 +144,12 @@ fun NoteScreen(id: String, nav: Navigator) {
     }
 
     val current = entry
+    // Notes are read from disk when the app starts; until then a missing note isn't a deleted
+    // one (e.g. when the app is reopened after the system closed it on this screen).
+    val notesLoaded by app.notes.loaded.collectAsStateWithLifecycle()
     // The note was deleted (completely): leave the screen.
-    LaunchedEffect(current == null) {
-        if (current == null) nav.back()
+    LaunchedEffect(notesLoaded, current == null) {
+        if (notesLoaded && current == null) nav.back()
     }
     if (current == null) return
     val note = current.note
