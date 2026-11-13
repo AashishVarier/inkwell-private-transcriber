@@ -125,6 +125,9 @@ Every push builds a release APK.
 Set up the signing secrets (below) first, so every build is signed with the same key and installs
 as an update over the previous one.
 
+To publish a version to install and keep, use the **Release** button instead (see
+[Releases](#releases-the-release-button) below).
+
 ### Option 2: build locally
 
 Requirements: JDK 17, and the Android SDK with Platform 35, Build-Tools 35.0.0,
@@ -200,6 +203,46 @@ If the secrets are missing, CI still produces an installable APK signed with a t
 key and shows a warning. Each such build has a *different* key, so it can't be installed over a
 previous one: you'd have to uninstall first, which deletes the notes in the app (export them
 first). Losing the release keystore has the same effect, so keep the backup.
+
+## Releases: the Release button
+
+1. Raise `versionCode` (by 1) and `versionName` (for example `1.0.1`) in `app/build.gradle.kts`
+   and push to `main`. The first release can use the current `1.0.0`.
+2. On GitHub, open **Actions → Release → Run workflow**, leave the branch on `main` and click
+   **Run workflow**. Tick **Save as a draft** to check the release before anyone else can see it.
+3. When the run finishes, `Inkwell-<version>.apk` is on the repository's **Releases** page. The
+   release notes list its SHA-256 checksum and your signing key's fingerprint.
+
+This repository is public, so a published release can be downloaded by anyone. The APK holds no
+secrets (only your key's public certificate), and a draft stays visible only to you until you
+publish it.
+
+How the signing key is kept safe:
+
+- It exists only as the four GitHub secrets (and your offline backup). The workflow writes it to
+  the runner's temporary folder, readable by the runner only, just for the build step, and
+  deletes it straight after.
+- A release is never signed with a throwaway debug key: if a secret is missing the run stops,
+  and the finished APK's certificate is checked before anything is published.
+- The job that holds the key can only read the repository. A separate job publishes the
+  release and never sees the key. The actions the workflow uses are pinned to exact commits.
+- Releases are made from `main` only.
+
+Optional, recommended:
+
+- **Pin your key's fingerprint**, so a release can never go out signed with a different key:
+
+  ```bash
+  keytool -list -v -keystore inkwell-release.jks -alias inkwell | grep 'SHA256:'
+  gh variable set SIGNING_CERT_SHA256 --body 'AB:CD:…'   # the value printed above
+  ```
+
+- **Limit the key to releases.** In **Settings → Environments → release** (created by the first
+  run), set *Deployment branches* to `main` only, add the four secrets there as environment
+  secrets, and delete the repository secrets. Then only the Release workflow on `main` can read
+  the key. Push builds are signed with a throwaway debug key from then on, so use those for
+  testing and install releases on your phone. You can also add yourself as a *Required
+  reviewer*, so each release waits for your approval.
 
 ## Installing the APK (sideloading)
 
